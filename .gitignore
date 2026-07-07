@@ -1,0 +1,7 @@
+# local test/helper artifacts (Part F.5)
+*.bat
+session.json
+c.txt
+h.txt
+curl
+.DS_Store
