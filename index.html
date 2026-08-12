@@ -39,8 +39,25 @@
       }
       #unity-logo {
         width: 180px; height: 180px; margin: 0 auto 12px;
+        position: relative;            /* anchor for the API-icon overlay + spinner */
+        background: none;              /* spinner shows first; icon appears via API swap or .gb-fallback */
+      }
+      #unity-logo.gb-fallback {        /* static baked-in icon — fallback only */
         background: url('TemplateData/game-icon.png') center / contain no-repeat;
       }
+      #gb-tenant-logo {                /* per-game icon from /context, layered over #unity-logo */
+        position: absolute; inset: 0;
+        background-position: center; background-size: contain; background-repeat: no-repeat;
+        opacity: 0; transition: opacity 0.25s ease;
+      }
+      #gb-tenant-logo.gb-ready { opacity: 1; }
+      #gb-spinner {                    /* shown while /context is in flight */
+        position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px;
+        border: 5px solid rgba(255,255,255,0.25); border-top-color: #ffffff;
+        border-radius: 50%; animation: gb-spin 0.9s linear infinite;
+      }
+      #gb-spinner.gb-hide { display: none; }
+      @keyframes gb-spin { to { transform: rotate(360deg); } }
       #unity-progress-bar-empty {                 /* track */
         width: 300px; height: 18px; margin: 12px auto 0;
         background: #d9d9d9 !important; background-image: none !important;
@@ -68,7 +85,10 @@
     <div id="unity-container">
       <canvas id="unity-canvas" width=1080 height=1920 tabindex="-1"></canvas>
       <div id="unity-loading-bar">
-        <div id="unity-logo"></div>
+        <div id="unity-logo">
+          <div id="gb-tenant-logo"></div>
+          <div id="gb-spinner"></div>
+        </div>
         <div id="unity-progress-bar-empty"><div id="unity-progress-bar-full"></div></div>
         <div id="unity-progress-percent">0%</div>
       </div>
@@ -134,6 +154,56 @@
 
       document.querySelector("#unity-loading-bar").style.display = "block";
 
+      // ===== Dynamic loading icon from GameBull /context (per-game admin icon) =====
+      // Fire-and-forget: fetch the PER-GAME icon and swap it in when it loads. Every failure path
+      // falls back to the static baked-in icon. NEVER blocks or delays the Unity build download.
+      (function loadTenantIcon() {
+        var DEFAULT_API_BASE = "https://api.g-b.store";   // PROD — matches GameBullEndpoints.BaseUrl
+        var DEFAULT_GAME_ID  = "LAPS_FUSE";               // ?gameId= wins; this is a harmless fallback
+
+        var logoEl    = document.querySelector("#unity-logo");
+        var tenantEl  = document.querySelector("#gb-tenant-logo");
+        var spinnerEl = document.querySelector("#gb-spinner");
+
+        function stopSpinner() { if (spinnerEl) spinnerEl.classList.add("gb-hide"); }
+        function fallback()    { if (logoEl) logoEl.classList.add("gb-fallback"); stopSpinner(); }
+
+        try {
+          var q = new URLSearchParams(window.location.search);
+          var tenantSlug = q.get("tenantSlug");
+          var token   = q.get("sessionToken") || q.get("bootToken") || q.get("token");
+          var apiBase = q.get("apiBase") || DEFAULT_API_BASE;
+          var gameId  = q.get("gameId")  || DEFAULT_GAME_ID;
+
+          if (!tenantSlug || !token) { fallback(); return; }   // no session -> static icon
+
+          var ctrl = new AbortController();
+          var timeout = setTimeout(function () { ctrl.abort(); }, 4000);   // never hang the spinner
+
+          fetch(apiBase + "/play/games/" + encodeURIComponent(gameId) +
+                "/context?tenantSlug=" + encodeURIComponent(tenantSlug),
+                { method: "GET", headers: { "Authorization": "Bearer " + token }, signal: ctrl.signal })
+            .then(function (r) { clearTimeout(timeout); return r.ok ? r.json() : null; })
+            .then(function (data) {
+              var c = data && data.customization;
+              // PER-GAME only: gameLogoUrl, then gameBannerUrl. NEVER logoUrl/tenantLogoUrl/assets/__logo__.
+              var iconUrl =
+                   (c && typeof c.gameLogoUrl   === "string" && c.gameLogoUrl)   ? c.gameLogoUrl   :
+                   (c && typeof c.gameBannerUrl === "string" && c.gameBannerUrl) ? c.gameBannerUrl : null;
+              if (!iconUrl) { fallback(); return; }
+
+              var img = new Image();   // preload-then-swap so a slow/broken image never flashes
+              img.onload  = function () {
+                if (tenantEl) { tenantEl.style.backgroundImage = "url('" + iconUrl + "')"; tenantEl.classList.add("gb-ready"); }
+                stopSpinner();
+              };
+              img.onerror = function () { fallback(); };
+              img.src = iconUrl;
+            })
+            .catch(function () { clearTimeout(timeout); fallback(); });
+        } catch (e) { fallback(); }
+      })();
+
       var script = document.createElement("script");
       script.src = loaderUrl;
       script.onload = () => {
@@ -155,6 +225,8 @@
             el.style.backgroundImage = "none";   // kill any background image (the icon)
             if (el.parentNode) el.parentNode.removeChild(el);
           }
+          killEl("#gb-tenant-logo");
+          killEl("#gb-spinner");
           killEl("#unity-logo");
           killEl("#unity-progress-bar-full");
           killEl("#unity-progress-bar-empty");
